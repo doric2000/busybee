@@ -24,7 +24,8 @@ public record TaskName(String value) {
             throw new IllegalArgumentException("name: must be single-line (no newlines)");
         }
         if (!SAFE_INPUT_PATTERN.matcher(value).matches()) {
-            LOGGER.warn("Invalid task name: '{}'", value);
+            // Avoid logging raw user input (could be sensitive)
+            LOGGER.warn("Invalid task name characters; length={}", value.length());
             throw new IllegalArgumentException("name: contains invalid characters");
         }
         this.value = value;

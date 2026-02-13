@@ -26,7 +26,8 @@ public class CommentText {
             throw new IllegalArgumentException("Comment text length is invalid");
         }
         if (!SAFE_INPUT_PATTERN.matcher(text).matches()) {
-            LOGGER.warn("Invalid comment text: '{}'", text);
+            // Avoid logging raw comment text (could be sensitive)
+            LOGGER.warn("Invalid comment text characters; length={}", text.length());
             throw new IllegalArgumentException("Comment text contains invalid characters");
         }
         m_text = text;

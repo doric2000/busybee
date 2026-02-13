@@ -31,11 +31,13 @@ repositories {
 
 dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-web:3.4.3")
+	implementation("org.springframework.boot:spring-boot-starter-validation")
 	implementation("org.owasp.safetypes:safetypes-java:1.0.0")
 	implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.6.0")
 	implementation("org.springframework.boot:spring-boot-starter-security")
 	implementation("javax.validation:validation-api:2.0.1.Final")
 	implementation("com.j2html:j2html:1.6.0")
+	implementation("org.jsoup:jsoup:1.18.1")
 	implementation("org.apache.commons:commons-collections4:4.0")
     implementation("jakarta.validation:jakarta.validation-api:3.0.2")
 
