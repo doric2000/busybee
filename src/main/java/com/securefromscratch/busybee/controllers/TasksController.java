@@ -15,12 +15,11 @@ import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.io.IOException;
-import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.security.Principal;
 import java.time.LocalDate;
 import java.time.LocalTime;
@@ -32,7 +31,7 @@ import com.securefromscratch.busybee.safety.TaskName;
 import com.securefromscratch.busybee.safety.TaskDescription;
 import com.securefromscratch.busybee.auth.TasksAuthorization;
 import com.securefromscratch.busybee.safety.ImageName;
-import com.securefromscratch.busybee.safety.ResponsibilityName;
+import com.securefromscratch.busybee.safety.Username;
 import com.securefromscratch.busybee.boxedpath.BoxedPath;
 import com.securefromscratch.busybee.boxedpath.PathSandbox;
 
@@ -42,6 +41,10 @@ import com.securefromscratch.busybee.boxedpath.PathSandbox;
 public class TasksController {
     private static final Logger LOGGER = LoggerFactory.getLogger(TasksController.class);
     private static final PathSandbox UPLOADS = PathSandbox.boxroot("uploads");
+    private static final int MAX_RESPONSIBLE_USERS = 5;
+
+    public record CreateResponse(UUID taskid) { }
+
     public static class MarkDoneRequest {
         public UUID taskid;
     }
@@ -51,7 +54,7 @@ public class TasksController {
         public TaskDescription desc;
         public LocalDate dueDate;
         public LocalTime dueTime;
-        public ResponsibilityName[] responsibilityOf;
+        public Username[] responsibilityOf;
     }
 
     @Autowired
@@ -84,36 +87,47 @@ public class TasksController {
     @PostMapping("/create")
     // SPEL
     @PreAuthorize("hasRole('ADMIN') or hasRole('CREATOR') or (hasRole('TRIAL') and @tasksAuthorization.trialUserCanCreate(authentication.name))")
-    public ResponseEntity<?> create(@RequestBody CreateRequest request,
-                                    @AuthenticationPrincipal UserDetails user) throws IOException 
+    public ResponseEntity<CreateResponse> create(@RequestBody CreateRequest request,
+                                                 @AuthenticationPrincipal UserDetails user) throws IOException
     {
-        // Debug: print all authorities for the current user
-        LOGGER.info("Authorities for user '{}': {}", user.getUsername(), user.getAuthorities());
+        validateCreateRequest(request);
 
-        try {
-            String name = request.name != null ? request.name.value() : null;
-            String desc = request.desc != null ? request.desc.value() : null;
-            String[] responsibilityOf = request.responsibilityOf != null ? java.util.Arrays.stream(request.responsibilityOf).map(r -> r.value()).toArray(String[]::new) : null;
-            String createdBy = user.getUsername();
+        String name = request.name != null ? request.name.value() : null;
+        String desc = request.desc != null ? request.desc.value() : null;
+        String[] responsibilityOf = request.responsibilityOf != null
+                ? java.util.Arrays.stream(request.responsibilityOf).map(Username::value).toArray(String[]::new)
+                : null;
+        String createdBy = user.getUsername();
 
-            UUID newTaskId;
-            if (request.dueDate == null && request.dueTime == null) {
-                newTaskId = m_tasks.add(name, desc, createdBy, responsibilityOf);
-            } else if (request.dueDate != null && request.dueTime == null) {
-                newTaskId = m_tasks.add(name, desc, request.dueDate, createdBy, responsibilityOf);
-            } else if (request.dueDate != null && request.dueTime != null) {
-                newTaskId = m_tasks.add(name, desc, request.dueDate, request.dueTime, createdBy, responsibilityOf);
-            } else {
-                // dueTime without dueDate is not allowed
-                return ResponseEntity.badRequest().body(Map.of("error", "Cannot set dueTime without dueDate"));
-            }
-            return ResponseEntity.ok(Map.of("taskid", newTaskId));
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
-        } catch (IOException e) {
-            LOGGER.error("Error creating task", e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(Map.of("error", "Could not create task"));
+        UUID newTaskId;
+        if (request.dueDate == null && request.dueTime == null) {
+            newTaskId = m_tasks.add(name, desc, createdBy, responsibilityOf);
+        } else if (request.dueDate != null && request.dueTime == null) {
+            newTaskId = m_tasks.add(name, desc, request.dueDate, createdBy, responsibilityOf);
+        } else if (request.dueDate != null && request.dueTime != null) {
+            newTaskId = m_tasks.add(name, desc, request.dueDate, request.dueTime, createdBy, responsibilityOf);
+        } else {
+            // dueTime without dueDate is not allowed
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "dueTime: cannot be set without dueDate");
+        }
+
+        LOGGER.info("Task created: taskId={}, createdBy={}", newTaskId, createdBy);
+        return ResponseEntity.ok(new CreateResponse(newTaskId));
+    }
+
+    private static void validateCreateRequest(CreateRequest request) {
+        if (request == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "request: required");
+        }
+
+        if (request.dueTime != null && request.dueDate == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "dueTime: cannot be set without dueDate");
+        }
+
+        // Prevent DoS via huge responsibility list
+        if (request.responsibilityOf != null && request.responsibilityOf.length > MAX_RESPONSIBLE_USERS) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "responsibilityOf: too many values (max " + MAX_RESPONSIBLE_USERS + ")");
         }
     }
 
