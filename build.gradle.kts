@@ -55,6 +55,7 @@ dependencies {
 	//implementation("org.springframework.security:spring-security-web:6.3.4")
 
 	testImplementation("org.springframework.boot:spring-boot-starter-test")
+	testImplementation("org.springframework.security:spring-security-test")
 	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

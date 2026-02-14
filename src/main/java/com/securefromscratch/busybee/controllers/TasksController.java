@@ -10,7 +10,6 @@ import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.Transformer;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PostFilter;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -22,8 +21,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.security.Principal;
 import java.time.LocalDate;
 import java.time.LocalTime;
@@ -33,19 +30,14 @@ import java.util.Map;
 import java.util.UUID;
 import com.securefromscratch.busybee.safety.TaskName;
 import com.securefromscratch.busybee.safety.TaskDescription;
-import com.securefromscratch.busybee.auth.TasksAuthorization;
 import com.securefromscratch.busybee.auth.UsersStorage;
-import com.securefromscratch.busybee.safety.ImageName;
 import com.securefromscratch.busybee.safety.Username;
-import com.securefromscratch.busybee.boxedpath.BoxedPath;
-import com.securefromscratch.busybee.boxedpath.PathSandbox;
 
 @RestController
 @CrossOrigin(origins = "null")
 @PreAuthorize("denyAll()")
 public class TasksController {
     private static final Logger LOGGER = LoggerFactory.getLogger(TasksController.class);
-    private static final PathSandbox UPLOADS = PathSandbox.boxroot("uploads");
     private static final int MAX_RESPONSIBLE_USERS = 5;
 
     public record CreateResponse(UUID taskid) { }
@@ -220,23 +212,4 @@ public class TasksController {
         }
     }
 
-    @GetMapping("/image")
-    @PreAuthorize("@tasksAuthorization.imgIsInOwnedOrAssignedTask(#img.value(), authentication.name)")
-    public ResponseEntity<byte[]> getImage(@RequestParam("img") ImageName img) throws IOException{
-        BoxedPath imagePath = UPLOADS.getRoot().resolve(img.get());
-        byte[] imageBytes = Files.readAllBytes(imagePath);
-        return ResponseEntity.ok().body(imageBytes);
-    }
-
-    @GetMapping("/attachment")
-    @PreAuthorize("@tasksAuthorization.attachmentIsInOwnedOrAssignedTask(#file.value(), authentication.name)")
-    public ResponseEntity<byte[]> getAttachment(@RequestParam("file") ImageName file) throws IOException {
-        BoxedPath attachmentPath = UPLOADS.getRoot().resolve(file.get());
-        byte[] attachmentBytes = Files.readAllBytes(attachmentPath);
-        String filename = Path.of(file.get()).getFileName().toString().replace("\"", "");
-        return ResponseEntity.ok()
-                .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                .header("Content-Disposition", "attachment; filename=\"" + filename + "\"")
-                .body(attachmentBytes);
-    }
 }

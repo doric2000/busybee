@@ -25,6 +25,7 @@ public class FileStorage {
     // Restrict file upload: allow specific extensions & mimetypes, verify magic bytes,
     // sandbox uploads, unique filenames, quota per user, disk space checks, and clear errors.
     private static final Logger LOGGER = LoggerFactory.getLogger(FileStorage.class);
+    private static final String CLIENT_REJECT_REASON = "upload: rejected";
 
     public enum FileType {
         IMAGE,
@@ -34,7 +35,7 @@ public class FileStorage {
 
     private static final long MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
     private static final long MIN_FREE_BYTES = 10 * 1024 * 1024;
-    private static final int MAX_FILES_PER_USER = 200;
+    private static final int MAX_FILES_PER_USER = 50;
     private static final int MAX_FILENAME_LENGTH = 80;
     private static final Pattern SAFE_FILENAME = Pattern.compile("^[a-zA-Z0-9._-]+$");
     private static final Pattern SAFE_USER_SEGMENT = Pattern.compile("^[a-zA-Z0-9_-]+$");
@@ -132,7 +133,7 @@ public class FileStorage {
 
         long freeBytes = Files.getFileStore(userDir).getUsableSpace();
         if (freeBytes < size + MIN_FREE_BYTES) {
-            throw reject(HttpStatus.INSUFFICIENT_STORAGE, "Insufficient disk space", username, baseName, size);
+            throw reject(HttpStatus.BAD_REQUEST, "Insufficient disk space", username, baseName, size);
         }
 
         String storedName = UUID.randomUUID().toString() + ext;
@@ -171,6 +172,19 @@ public class FileStorage {
 
         LOGGER.info("Upload stored: user={} filename={} stored={}", safeLogValue(username), safeLogValue(baseName), storedName);
         return safeUserSegment + "/" + storedName;
+    }
+
+    public void cleanupStoredUpload(String storedRelativePath) {
+        if (storedRelativePath == null || storedRelativePath.isBlank()) {
+            return;
+        }
+        try {
+            BoxedPath storedPath = m_storageRoot.resolve(storedRelativePath);
+            Files.deleteIfExists(storedPath);
+        } catch (Exception ex) {
+            // Cleanup should never mask the original application error.
+            LOGGER.warn("Upload cleanup failed: stored={}", safeLogValue(storedRelativePath), ex);
+        }
     }
 
     private static String getLowerExtension(String filename) {
@@ -245,7 +259,7 @@ public class FileStorage {
                 safeLogValue(filename),
                 size
         );
-        return new ResponseStatusException(status, reason);
+        return new ResponseStatusException(status, CLIENT_REJECT_REASON);
     }
 
     private static String safeLogValue(String value) {

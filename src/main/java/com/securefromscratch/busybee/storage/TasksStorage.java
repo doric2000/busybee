@@ -1,11 +1,13 @@
 package com.securefromscratch.busybee.storage;
 
 import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.io.*;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.*;
+import java.nio.file.Path;
 
 @Service
 public class TasksStorage {
@@ -82,6 +84,27 @@ public class TasksStorage {
         UUID commentId = t.addComment(text, image, attachment, createdBy, after);
         saveTasks();
         return commentId;
+    }
+
+    public UUID addCommentWithOptionalUpload(Task t, String text, Optional<MultipartFile> optFile, String createdBy, Optional<UUID> after) throws IOException {
+        if (optFile == null || optFile.isEmpty() || optFile.get() == null || optFile.get().isEmpty()) {
+            return addComment(t, text, createdBy, after);
+        }
+
+        MultipartFile file = optFile.get();
+        FileStorage storage = new FileStorage(Path.of("uploads").toAbsolutePath().normalize());
+        String storedFilename = storage.storeUpload(file, createdBy);
+
+        FileStorage.FileType filetype = FileStorage.identifyType(file);
+        Optional<String> imageFilename = (filetype == FileStorage.FileType.IMAGE) ? Optional.of(storedFilename) : Optional.empty();
+        Optional<String> attachFilename = (filetype != FileStorage.FileType.IMAGE) ? Optional.of(storedFilename) : Optional.empty();
+
+        try {
+            return addComment(t, text, imageFilename, attachFilename, createdBy, after);
+        } catch (IOException | RuntimeException ex) {
+            storage.cleanupStoredUpload(storedFilename);
+            throw ex;
+        }
     }
 
     public Optional<Task> find(UUID taskid) {

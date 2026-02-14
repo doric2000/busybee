@@ -1,0 +1,243 @@
+--- src/main/java/com/securefromscratch/busybee/controllers/TasksController.java ---
+   1: package com.securefromscratch.busybee.controllers;
+   2: 
+   3: import com.securefromscratch.busybee.storage.Task;
+   4: import com.securefromscratch.busybee.storage.TasksStorage;
+   5: 
+   6: import jakarta.validation.Valid;
+   7: import jakarta.validation.constraints.NotNull;
+   8: 
+   9: import org.apache.commons.collections4.CollectionUtils;
+  10: import org.apache.commons.collections4.Transformer;
+  11: import org.springframework.beans.factory.annotation.Autowired;
+  12: import org.springframework.http.HttpStatus;
+  13: import org.springframework.http.MediaType;
+  14: import org.springframework.http.ResponseEntity;
+  15: import org.springframework.security.access.prepost.PostFilter;
+  16: import org.springframework.security.access.prepost.PreAuthorize;
+  17: import org.springframework.security.core.annotation.AuthenticationPrincipal;
+  18: import org.springframework.security.core.userdetails.UserDetails;
+  19: import org.springframework.web.bind.annotation.*;
+  20: import org.slf4j.Logger;
+  21: import org.slf4j.LoggerFactory;
+  22: import org.springframework.web.server.ResponseStatusException;
+  23: 
+  24: import java.io.IOException;
+  25: import java.nio.file.Files;
+  26: import java.nio.file.Path;
+  27: import java.security.Principal;
+  28: import java.time.LocalDate;
+  29: import java.time.LocalTime;
+  30: import java.util.Collection;
+  31: import java.util.List;
+  32: import java.util.Map;
+  33: import java.util.UUID;
+  34: import com.securefromscratch.busybee.safety.TaskName;
+  35: import com.securefromscratch.busybee.safety.TaskDescription;
+  36: import com.securefromscratch.busybee.auth.TasksAuthorization;
+  37: import com.securefromscratch.busybee.auth.UsersStorage;
+  38: import com.securefromscratch.busybee.safety.ImageName;
+  39: import com.securefromscratch.busybee.safety.Username;
+  40: import com.securefromscratch.busybee.boxedpath.BoxedPath;
+  41: import com.securefromscratch.busybee.boxedpath.PathSandbox;
+  42: 
+  43: @RestController
+  44: @CrossOrigin(origins = "null")
+  45: @PreAuthorize("denyAll()")
+  46: public class TasksController {
+  47:     private static final Logger LOGGER = LoggerFactory.getLogger(TasksController.class);
+  48:     private static final PathSandbox UPLOADS = PathSandbox.boxroot("uploads");
+  49:     private static final int MAX_RESPONSIBLE_USERS = 5;
+  50: 
+  51:     public record CreateResponse(UUID taskid) { }
+  52: 
+  53:     public static class MarkDoneRequest {
+  54:         @NotNull
+  55:         public UUID taskid;
+  56:     }
+  57: 
+  58:     public static class CreateRequest {
+  59:         public TaskName name;
+  60:         public TaskDescription desc;
+  61:         public LocalDate dueDate;
+  62:         public LocalTime dueTime;
+  63:         public Username[] responsibilityOf;
+  64:     }
+  65: 
+  66:     @Autowired
+  67:     private TasksStorage m_tasks;
+  68: 
+  69:     @Autowired
+  70:     private UsersStorage m_users;
+  71: 
+  72:     @GetMapping("/tasks")
+  73:     @PreAuthorize("permitAll()")
+  74:     @PostFilter("hasRole('ADMIN') or T(com.securefromscratch.busybee.auth.TasksAuthorization).userAllowedToViewTask(filterObject, authentication.name)")
+  75:     public Collection<TaskOut> getTasks(Principal principal) {
+  76:         List<Task> allTasks = m_tasks.getAll();
+  77:         Transformer<Task, TaskOut> transformer = t -> TaskOut.fromTask((Task)t);
+  78:         Collection<TaskOut> returnedVal = CollectionUtils.collect(allTasks, transformer);
+  79:         // TasksAuthorization.filterToAuthorizedTasks(returnedVal, principal.getName()); // Filtering now handled by @PostFilter
+  80:         return returnedVal;
+  81:     }
+  82: 
+  83:     @PostMapping("/done")
+  84:     @PreAuthorize("@tasksAuthorization.isOwnerOrResponsible(#request.taskid, authentication.name) or hasRole('ADMIN')")
+  85:     public ResponseEntity<Map<String, Boolean>> markTaskDone (@Valid @RequestBody MarkDoneRequest request) throws IOException{
+  86:         boolean alreadyDone = m_tasks.markDone(request.taskid);
+  87:         return ResponseEntity.ok(Map.of("success",!alreadyDone));
+  88:     }
+  89: 
+  90:     //AUTHRIZATION RULES:
+  91:     //ADMIN - can create tasks.
+  92:     //CREATOR - can create tasks.
+  93:     //TRIAL – can create a task. but only if there is not an active task.
+  94: 
+  95:     @PostMapping("/create")
+  96:     @PreAuthorize("hasRole('ADMIN') or hasRole('CREATOR') or (hasRole('TRIAL') and @tasksAuthorization.trialUserCanCreate(authentication.name))")
+  97:     public ResponseEntity<CreateResponse> create(@RequestBody CreateRequest request,
+  98:                                                  @AuthenticationPrincipal UserDetails user) throws IOException
+  99:     {
+ 100:         validateCreateRequest(request);
+ 101: 
+ 102:         String name = request.name.value();
+ 103:         String desc = request.desc.value();
+ 104:         String[] responsibilityOf = request.responsibilityOf != null
+ 105:                 ? java.util.Arrays.stream(request.responsibilityOf).map(Username::value).toArray(String[]::new)
+ 106:                 : null;
+ 107:         String createdBy = user.getUsername();
+ 108: 
+ 109:         validateResponsibleUsersExist(request.responsibilityOf);
+ 110: 
+ 111:         validateUniqueTaskName(name);
+ 112: 
+ 113:         UUID newTaskId = addTask(request, name, desc, createdBy, responsibilityOf);
+ 114: 
+ 115:         // Avoid logging potentially sensitive identifiers (PII). taskId is sufficient for correlation.
+ 116:         LOGGER.info("Task created: taskId={}", newTaskId);
+ 117:         return ResponseEntity.ok(new CreateResponse(newTaskId));
+ 118:     }
+ 119: 
+ 120:     private void validateResponsibleUsersExist(Username[] responsibilityOf) {
+ 121:         if (responsibilityOf == null) {
+ 122:             return;
+ 123:         }
+ 124:         for (int i = 0; i < responsibilityOf.length; i++) {
+ 125:             Username u = responsibilityOf[i];
+ 126:             if (u == null) {
+ 127:                 continue; // handled by validateCreateRequest
+ 128:             }
+ 129:             boolean exists = m_users.findByUsername(u.value()).isPresent();
+ 130:             if (!exists) {
+ 131:                 // Don't log the username (PII). Index is enough for debugging.
+ 132:                 LOGGER.warn("Create task rejected: responsibilityOf[{}] user does not exist", i);
+ 133:                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+ 134:                         "responsibilityOf[" + i + "]: user does not exist");
+ 135:             }
+ 136:         }
+ 137:     }
+ 138: 
+ 139:     private UUID addTask(CreateRequest request, String name, String desc, String createdBy, String[] responsibilityOf) throws IOException {
+ 140:         if (request.dueDate == null && request.dueTime == null) {
+ 141:             return m_tasks.add(name, desc, createdBy, responsibilityOf);
+ 142:         } else if (request.dueDate != null && request.dueTime == null) {
+ 143:             return m_tasks.add(name, desc, request.dueDate, createdBy, responsibilityOf);
+ 144:         } else if (request.dueDate != null && request.dueTime != null) {
+ 145:             return m_tasks.add(name, desc, request.dueDate, request.dueTime, createdBy, responsibilityOf);
+ 146:         } else {
+ 147:             // validateCreateRequest(...) should have blocked this combination.
+ 148:             throw new IllegalStateException("Invalid dueDate/dueTime combination");
+ 149:         }
+ 150:     }
+ 151: 
+ 152:     private static void validateCreateRequest(CreateRequest request) {
+ 153:         if (request == null) {
+ 154:             LOGGER.warn("Create task rejected: missing request body");
+ 155:             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "request: required");
+ 156:         }
+ 157: 
+ 158:         if (request.name == null) {
+ 159:             LOGGER.warn("Create task rejected: missing name");
+ 160:             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "name: required");
+ 161:         }
+ 162: 
+ 163:         if (request.desc == null) {
+ 164:             LOGGER.warn("Create task rejected: missing desc");
+ 165:             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "desc: required");
+ 166:         }
+ 167: 
+ 168:         if (request.responsibilityOf == null) {
+ 169:             LOGGER.warn("Create task rejected: missing responsibilityOf");
+ 170:             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "responsibilityOf: required");
+ 171:         }
+ 172: 
+ 173:         if (request.dueTime != null && request.dueDate == null) {
+ 174:             LOGGER.warn("Create task rejected: dueTime without dueDate");
+ 175:             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "dueTime: cannot be set without dueDate");
+ 176:         }
+ 177: 
+ 178:         if (request.dueDate != null) {
+ 179:             LocalDate today = LocalDate.now();
+ 180:             if (request.dueDate.isBefore(today)) {
+ 181:                 LOGGER.warn("Create task rejected: dueDate is in the past");
+ 182:                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "dueDate: cannot be in the past");
+ 183:             }
+ 184: 
+ 185:             if (request.dueTime != null && request.dueDate.isEqual(today)) {
+ 186:                 LocalTime now = LocalTime.now();
+ 187:                 if (request.dueTime.isBefore(now)) {
+ 188:                     LOGGER.warn("Create task rejected: dueDate+dueTime is in the past");
+ 189:                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+ 190:                             "dueTime: cannot set dueDate+dueTime in the past");
+ 191:                 }
+ 192:             }
+ 193:         }
+ 194: 
+ 195:         // Prevent DoS via huge responsibility list
+ 196:         if (request.responsibilityOf != null && request.responsibilityOf.length > MAX_RESPONSIBLE_USERS) {
+ 197:             LOGGER.warn("Create task rejected: too many responsible users; count={}", request.responsibilityOf.length);
+ 198:             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+ 199:                     "responsibilityOf: too many values (max " + MAX_RESPONSIBLE_USERS + ")");
+ 200:         }
+ 201: 
+ 202:         if (request.responsibilityOf != null) {
+ 203:             for (int i = 0; i < request.responsibilityOf.length; i++) {
+ 204:                 if (request.responsibilityOf[i] == null) {
+ 205:                     LOGGER.warn("Create task rejected: responsibilityOf[{}] is null", i);
+ 206:                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+ 207:                             "responsibilityOf[" + i + "]: required");
+ 208:                 }
+ 209:             }
+ 210:         }
+ 211:     }
+ 212: 
+ 213:     private void validateUniqueTaskName(String name) {
+ 214:         if (name == null) {
+ 215:             return;
+ 216:         }
+ 217:         if (m_tasks.taskNameExists(name)) {
+ 218:             LOGGER.warn("Create task rejected: duplicate task name");
+ 219:             throw new ResponseStatusException(HttpStatus.CONFLICT, "name: task name already exists");
+ 220:         }
+ 221:     }
+ 222: 
+ 223:     @GetMapping("/image")
+ 224:     @PreAuthorize("@tasksAuthorization.imgIsInOwnedOrAssignedTask(#img.value(), authentication.name)")
+ 225:     public ResponseEntity<byte[]> getImage(@RequestParam("img") ImageName img) throws IOException{
+ 226:         BoxedPath imagePath = UPLOADS.getRoot().resolve(img.get());
+ 227:         byte[] imageBytes = Files.readAllBytes(imagePath);
+ 228:         return ResponseEntity.ok().body(imageBytes);
+ 229:     }
+ 230: 
+ 231:     @GetMapping("/attachment")
+ 232:     @PreAuthorize("@tasksAuthorization.attachmentIsInOwnedOrAssignedTask(#file.value(), authentication.name)")
+ 233:     public ResponseEntity<byte[]> getAttachment(@RequestParam("file") ImageName file) throws IOException {
+ 234:         BoxedPath attachmentPath = UPLOADS.getRoot().resolve(file.get());
+ 235:         byte[] attachmentBytes = Files.readAllBytes(attachmentPath);
+ 236:         String filename = Path.of(file.get()).getFileName().toString().replace("\"", "");
+ 237:         return ResponseEntity.ok()
+ 238:                 .contentType(MediaType.APPLICATION_OCTET_STREAM)
+ 239:                 .header("Content-Disposition", "attachment; filename=\"" + filename + "\"")
+ 240:                 .body(attachmentBytes);
+ 241:     }
+ 242: }

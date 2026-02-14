@@ -1,0 +1,45 @@
+--- src/main/java/com/securefromscratch/busybee/safety/CommentText.java ---
+   1: package com.securefromscratch.busybee.safety;
+   2: 
+   3: import com.fasterxml.jackson.annotation.JsonCreator;
+   4: import com.fasterxml.jackson.annotation.JsonValue;
+   5: import org.slf4j.Logger;
+   6: import org.slf4j.LoggerFactory;
+   7: 
+   8: import java.util.regex.Pattern;
+   9: 
+  10: public class CommentText {
+  11:     private static final Logger LOGGER = LoggerFactory.getLogger(CommentText.class);
+  12:     private static final int MIN_LENGTH = 1;
+  13:     private static final int MAX_LENGTH = 500;
+  14:     private static final Pattern SAFE_INPUT_PATTERN = Pattern.compile("^[a-zA-Z0-9\\u0590-\\u05FF\\s.,!?\"'():;\\-_/]*$");
+  15: 
+  16:     private final String m_text;
+  17: 
+  18:     @JsonCreator
+  19:     public CommentText(String text) {
+  20:         if (text == null || text.isBlank()) {
+  21:             LOGGER.warn("Invalid comment text: empty");
+  22:             throw new IllegalArgumentException("Comment text is required");
+  23:         }
+  24:         if (text.length() < MIN_LENGTH || text.length() > MAX_LENGTH) {
+  25:             LOGGER.warn("Invalid comment text length: {}", text.length());
+  26:             throw new IllegalArgumentException("Comment text length is invalid");
+  27:         }
+  28:         if (!SAFE_INPUT_PATTERN.matcher(text).matches()) {
+  29:             // Avoid logging raw comment text (could be sensitive)
+  30:             LOGGER.warn("Invalid comment text characters; length={}", text.length());
+  31:             throw new IllegalArgumentException("Comment text contains invalid characters");
+  32:         }
+  33:         m_text = text;
+  34:     }
+  35: 
+  36:     @JsonValue
+  37:     public String value() {
+  38:         return m_text;
+  39:     }
+  40: 
+  41:     public String get() {
+  42:         return m_text;
+  43:     }
+  44: }

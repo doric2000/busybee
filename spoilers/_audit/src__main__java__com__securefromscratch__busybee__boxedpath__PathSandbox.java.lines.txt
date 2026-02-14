@@ -1,0 +1,73 @@
+--- src/main/java/com/securefromscratch/busybee/boxedpath/PathSandbox.java ---
+   1: package com.securefromscratch.busybee.boxedpath;
+   2: 
+   3: import javax.validation.constraints.NotNull;
+   4: import java.io.IOException;
+   5: import java.nio.file.FileSystemAlreadyExistsException;
+   6: import java.nio.file.FileSystems;
+   7: import java.nio.file.Path;
+   8: import java.util.Collections;
+   9: 
+  10: public class PathSandbox {
+  11:     public static PathSandbox boxroot(@NotNull Path sandboxRoot) {
+  12:         return new PathSandbox(sandboxRoot);
+  13:     }
+  14: 
+  15:     public static PathSandbox boxroot(SandboxJailbreak jailbreakPolicy, @NotNull Path sandboxRoot) {
+  16:         return new PathSandbox(jailbreakPolicy, sandboxRoot);
+  17:     }
+  18: 
+  19:     public static PathSandbox boxroot(String first, String... more) {
+  20:         Path constructedPath = Path.of(first, more);
+  21:         return new PathSandbox(constructedPath);
+  22:     }
+  23: 
+  24:     public static PathSandbox boxroot(SandboxJailbreak jailbreakPolicy, String first, String... more) {
+  25:         Path constructedPath = Path.of(first, more);
+  26:         return new PathSandbox(jailbreakPolicy, constructedPath);
+  27:     }
+  28: 
+  29:     private static BoxedFileSystem getFilesystem(SandboxJailbreak jailbreakPolicy, @NotNull Path sandboxRoot) {
+  30:         try {
+  31:             return (BoxedFileSystem) FileSystems.newFileSystem(BoxedPath.toUri(jailbreakPolicy, sandboxRoot), Collections.emptyMap());
+  32:         }
+  33:         catch (FileSystemAlreadyExistsException | IOException ex) {
+  34:             return (BoxedFileSystem) FileSystems.getFileSystem(BoxedPath.toUri(jailbreakPolicy, sandboxRoot));
+  35:         }
+  36:     }
+  37: 
+  38:     private final BoxedFileSystem m_fs;
+  39: 
+  40:     private PathSandbox(@NotNull Path sandboxRoot) {
+  41:         this(SandboxJailbreak.DISALLOW, sandboxRoot);
+  42:     }
+  43: 
+  44:     private PathSandbox(SandboxJailbreak jailbreakPolicy, @NotNull Path sandboxRoot) {
+  45:         m_fs = getFilesystem(jailbreakPolicy, sandboxRoot);
+  46:     }
+  47: 
+  48:     public @NotNull BoxedPath getRoot() {
+  49:         return new BoxedPath(this.m_fs.getSandboxAbsolutePath(), this);
+  50:     }
+  51: 
+  52:     public @NotNull BoxedPath of(@NotNull Path path) {
+  53:         return new BoxedPath(path, this);
+  54:     }
+  55: 
+  56:     public @NotNull BoxedPath of(@NotNull String first, @NotNull String... more) {
+  57:         return of(Path.of(first, more));
+  58:     }
+  59: 
+  60:     public @NotNull BoxedPath resolve(@NotNull Path other) {
+  61:         return getRoot().resolve(other);
+  62:     }
+  63: 
+  64:     public @NotNull BoxedPath resolve(@NotNull String other) {
+  65:         return resolve(Path.of(other));
+  66:     }
+  67: 
+  68:     // intentionally package private
+  69:     SandboxJailbreak getJailbreakPolicy() { return m_fs.getJailbreakPolicy(); }
+  70:     // intentionally package private
+  71:     BoxedFileSystem getFileSystem() { return m_fs; }
+  72: }

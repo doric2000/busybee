@@ -216,7 +216,7 @@ function createComments(taskid, comments) {
 
         if (comment.image) {
             const img = document.createElement("img");
-            img.src = `${baseUrl}/image?img=${comment.image}`;
+            img.src = `${baseUrl}/image?file=${comment.image}`;
             img.alt = "Comment Image";
             commentElement.appendChild(img);
         }

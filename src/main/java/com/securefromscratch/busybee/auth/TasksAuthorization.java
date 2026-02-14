@@ -78,6 +78,10 @@ public class TasksAuthorization {
         return false;
     }
 
+    public boolean imageIsInOwnedOrAssignedTask(String imgName, String currentUser) {
+        return imgIsInOwnedOrAssignedTask(imgName, currentUser);
+    }
+
     public boolean attachmentIsInOwnedOrAssignedTask(String filename, String currentUser) {
         for (Task t : m_tasks.getAll()) {
             if (!userAllowedToViewTask(t, currentUser)) {

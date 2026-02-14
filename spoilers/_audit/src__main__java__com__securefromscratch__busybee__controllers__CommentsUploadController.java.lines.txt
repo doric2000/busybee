@@ -1,0 +1,72 @@
+--- src/main/java/com/securefromscratch/busybee/controllers/CommentsUploadController.java ---
+   1: package com.securefromscratch.busybee.controllers;
+   2: 
+   3: import com.securefromscratch.busybee.safety.CommentText;
+   4: import com.securefromscratch.busybee.storage.FileStorage;
+   5: import com.securefromscratch.busybee.storage.Task;
+   6: import com.securefromscratch.busybee.storage.TaskNotFoundException;
+   7: import com.securefromscratch.busybee.storage.TasksStorage;
+   8: 
+   9: import jakarta.validation.constraints.NotNull;
+  10: import org.springframework.beans.factory.annotation.Autowired;
+  11: import org.springframework.http.MediaType;
+  12: import org.springframework.http.ResponseEntity;
+  13: import org.springframework.security.access.prepost.PreAuthorize;
+  14: import org.springframework.security.core.annotation.AuthenticationPrincipal;
+  15: import org.springframework.security.core.userdetails.UserDetails;
+  16: import org.springframework.web.bind.annotation.*;
+  17: import org.springframework.web.multipart.MultipartFile;
+  18: 
+  19: import java.io.*;
+  20: import java.nio.file.Path;
+  21: import java.util.Optional;
+  22: import java.util.UUID;
+  23: 
+  24: @RestController
+  25: public class CommentsUploadController {
+  26:     @Autowired
+  27:     private TasksStorage m_tasks;
+  28: 
+  29:     // TODO: If you don't have a CommentText type - use whatever type you have
+  30:     public record AddCommentFields(@NotNull UUID taskid, Optional<UUID> commentid, @NotNull CommentText text) { }
+  31:     public record CreatedCommentId(UUID commentid) {}
+  32:     @PreAuthorize("@tasksAuthorization.userAllowedToComment(#commentFields.taskid(), authentication.name)")
+  33:     @PostMapping(value = "/comment", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+  34:     public ResponseEntity<CreatedCommentId> addComment(
+  35:             @RequestPart("commentFields") AddCommentFields commentFields,
+  36:             @RequestPart(value = "file", required = false) Optional<MultipartFile> optFile,
+  37:             @AuthenticationPrincipal UserDetails user
+  38:     ) throws IOException {
+  39:         Optional<Task> t = m_tasks.find(commentFields.taskid());
+  40:         if (t.isEmpty()) {
+  41:             throw new TaskNotFoundException(commentFields.taskid());
+  42:         }
+  43: 
+  44:         String username = user.getUsername();
+  45: 
+  46:         if (optFile.isEmpty() || optFile.get().isEmpty()) {
+  47:             UUID newComment = m_tasks.addComment(t.get(), commentFields.text().get(), username, commentFields.commentid());
+  48:             return ResponseEntity.ok(new CreatedCommentId(newComment));
+  49:         }
+  50: 
+  51: 		String storedFilename = filePartProcessing(optFile.get(), username);
+  52:         FileStorage.FileType filetype = FileStorage.identifyType(optFile.get());
+  53:         Optional<String> imageFilename = (filetype == FileStorage.FileType.IMAGE) ? Optional.of(storedFilename) : Optional.empty();
+  54:         Optional<String> attachFilename = (filetype != FileStorage.FileType.IMAGE) ? Optional.of(storedFilename) : Optional.empty();
+  55: 
+  56:         UUID newComment = m_tasks.addComment(
+  57:                 t.get(),
+  58:                 commentFields.text().get(),
+  59:                 imageFilename,
+  60:                 attachFilename,
+  61:                 username,
+  62:                 commentFields.commentid()
+  63:         );
+  64: 		return ResponseEntity.ok(new CreatedCommentId(newComment));
+  65:     }
+  66: 
+  67: 	private String filePartProcessing(MultipartFile fileData, String username) throws IOException {
+  68:         FileStorage storage = new FileStorage(Path.of("uploads").toAbsolutePath().normalize());
+  69:         return storage.storeUpload(fileData, username);
+  70: 	}
+  71: }

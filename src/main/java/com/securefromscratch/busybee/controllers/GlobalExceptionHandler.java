@@ -10,12 +10,14 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseBody;
+import org.springframework.web.server.ResponseStatusException;
 
 import jakarta.validation.ConstraintViolationException;
 
@@ -64,6 +66,21 @@ public class GlobalExceptionHandler {
         // Commonly triggered by malformed JSON or wrong field types.
         LOGGER.warn("Rejected request: path={}, type=HttpMessageNotReadableException", requestPath(request));
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new ErrorResponse("request: malformed"));
+    }
+
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<ErrorResponse> responseStatus(ResponseStatusException ex, HttpServletRequest request) {
+        HttpStatusCode statusCode = ex.getStatusCode();
+        LOGGER.warn("Rejected request: path={}, type=ResponseStatusException, status={}", requestPath(request), statusCode.value());
+        String message = Optional.ofNullable(ex.getReason()).orElse("request: rejected");
+        return ResponseEntity.status(statusCode).body(new ErrorResponse(message));
+    }
+
+    @ExceptionHandler(SecurityException.class)
+    public ResponseEntity<ErrorResponse> security(SecurityException ex, HttpServletRequest request) {
+        // SecurityException messages may contain filesystem paths; don't leak.
+        LOGGER.warn("Rejected request: path={}, type=SecurityException", requestPath(request));
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new ErrorResponse("request: invalid path"));
     }
 
     @ExceptionHandler(TaskNotFoundException.class)

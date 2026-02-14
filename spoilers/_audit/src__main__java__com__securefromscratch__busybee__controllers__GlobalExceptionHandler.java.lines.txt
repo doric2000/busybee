@@ -1,0 +1,90 @@
+--- src/main/java/com/securefromscratch/busybee/controllers/GlobalExceptionHandler.java ---
+   1: package com.securefromscratch.busybee.controllers;
+   2: 
+   3: import com.securefromscratch.busybee.storage.TaskNotFoundException;
+   4: 
+   5: import java.io.IOException;
+   6: import java.nio.file.NoSuchFileException;
+   7: import java.util.Optional;
+   8: 
+   9: import jakarta.servlet.http.HttpServletRequest;
+  10: import org.slf4j.Logger;
+  11: import org.slf4j.LoggerFactory;
+  12: import org.springframework.http.HttpStatus;
+  13: import org.springframework.http.ResponseEntity;
+  14: import org.springframework.http.converter.HttpMessageNotReadableException;
+  15: import org.springframework.web.bind.MethodArgumentNotValidException;
+  16: import org.springframework.web.bind.annotation.ControllerAdvice;
+  17: import org.springframework.web.bind.annotation.ExceptionHandler;
+  18: import org.springframework.web.bind.annotation.ResponseBody;
+  19: 
+  20: import jakarta.validation.ConstraintViolationException;
+  21: 
+  22: @ControllerAdvice
+  23: @ResponseBody
+  24: public class GlobalExceptionHandler {
+  25: 
+  26:     private static final Logger LOGGER = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+  27: 
+  28:     public record ErrorResponse(String error) {}
+  29: 
+  30:     private static String requestPath(HttpServletRequest request) {
+  31:         return request != null ? request.getRequestURI() : "?";
+  32:     }
+  33: 
+  34:     @ExceptionHandler(IllegalArgumentException.class)
+  35:     public ResponseEntity<ErrorResponse> illegalArgument(IllegalArgumentException ex, HttpServletRequest request) {
+  36:         // Avoid logging user-provided content (PII/credentials). Path + type is enough.
+  37:         LOGGER.warn("Rejected request: path={}, type=IllegalArgumentException", requestPath(request));
+  38:         String message = Optional.ofNullable(ex.getMessage()).orElse("request: invalid");
+  39:         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new ErrorResponse(message));
+  40:     }
+  41: 
+  42:     @ExceptionHandler(MethodArgumentNotValidException.class)
+  43:     public ResponseEntity<ErrorResponse> validationFailed(MethodArgumentNotValidException ex, HttpServletRequest request) {
+  44:         LOGGER.warn("Rejected request: path={}, type=MethodArgumentNotValidException", requestPath(request));
+  45:         String message = ex.getBindingResult().getFieldErrors().stream()
+  46:                 .findFirst()
+  47:                 .map(e -> e.getField() + ": " + e.getDefaultMessage())
+  48:                 .orElse("request: invalid");
+  49:         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new ErrorResponse(message));
+  50:     }
+  51: 
+  52:     @ExceptionHandler(ConstraintViolationException.class)
+  53:     public ResponseEntity<ErrorResponse> constraintViolation(ConstraintViolationException ex, HttpServletRequest request) {
+  54:         LOGGER.warn("Rejected request: path={}, type=ConstraintViolationException", requestPath(request));
+  55:         String message = ex.getConstraintViolations().stream()
+  56:                 .findFirst()
+  57:                 .map(v -> Optional.ofNullable(v.getMessage()).orElse("request: invalid"))
+  58:                 .orElse("request: invalid");
+  59:         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new ErrorResponse(message));
+  60:     }
+  61: 
+  62:     @ExceptionHandler(HttpMessageNotReadableException.class)
+  63:     public ResponseEntity<ErrorResponse> messageNotReadable(HttpMessageNotReadableException ex, HttpServletRequest request) {
+  64:         // Commonly triggered by malformed JSON or wrong field types.
+  65:         LOGGER.warn("Rejected request: path={}, type=HttpMessageNotReadableException", requestPath(request));
+  66:         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new ErrorResponse("request: malformed"));
+  67:     }
+  68: 
+  69:     @ExceptionHandler(TaskNotFoundException.class)
+  70:     public ResponseEntity<ErrorResponse> taskNotFound(TaskNotFoundException ex, HttpServletRequest request) {
+  71:         // Avoid logging the taskId. Path + type is sufficient.
+  72:         LOGGER.warn("Rejected request: path={}, type=TaskNotFoundException", requestPath(request));
+  73:         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ErrorResponse("task: not found"));
+  74:     }
+  75: 
+  76:     @ExceptionHandler(NoSuchFileException.class)
+  77:     public ResponseEntity<ErrorResponse> resourceNotFound(NoSuchFileException ex) {
+  78:         // Don't leak file paths.
+  79:         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ErrorResponse("resource: not found"));
+  80:     }
+  81: 
+  82:     @ExceptionHandler(IOException.class)
+  83:     public ResponseEntity<ErrorResponse> io(IOException ex, HttpServletRequest request) {
+  84:         // Unexpected IO errors shouldn't look like 404.
+  85:         // Includes failures like "cannot save task" (saveTasks throws IOException).
+  86:         LOGGER.error("Server IO failure: path={}, type={}", requestPath(request), ex.getClass().getSimpleName(), ex);
+  87:         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(new ErrorResponse("server: io error"));
+  88:     }
+  89: }

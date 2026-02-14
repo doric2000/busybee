@@ -1,0 +1,307 @@
+--- src/main/java/com/securefromscratch/busybee/storage/FileStorage.java ---
+   1: package com.securefromscratch.busybee.storage;
+   2: 
+   3: import com.securefromscratch.busybee.boxedpath.BoxedPath;
+   4: import com.securefromscratch.busybee.boxedpath.PathSandbox;
+   5: import org.slf4j.Logger;
+   6: import org.slf4j.LoggerFactory;
+   7: import org.springframework.http.HttpStatus;
+   8: import org.springframework.web.multipart.MultipartFile;
+   9: import org.springframework.web.server.ResponseStatusException;
+  10: 
+  11: import java.io.BufferedInputStream;
+  12: import java.io.IOException;
+  13: import java.io.InputStream;
+  14: import java.io.OutputStream;
+  15: import java.nio.file.Files;
+  16: import java.nio.file.Path;
+  17: import java.nio.file.StandardOpenOption;
+  18: import java.util.Locale;
+  19: import java.util.Set;
+  20: import java.util.UUID;
+  21: import java.util.regex.Pattern;
+  22: import java.util.stream.Stream;
+  23: 
+  24: public class FileStorage {
+  25:     // Restrict file upload: allow specific extensions & mimetypes, verify magic bytes,
+  26:     // sandbox uploads, unique filenames, quota per user, disk space checks, and clear errors.
+  27:     private static final Logger LOGGER = LoggerFactory.getLogger(FileStorage.class);
+  28: 
+  29:     public enum FileType {
+  30:         IMAGE,
+  31:         PDF,
+  32:         OTHER
+  33:     }
+  34: 
+  35:     private static final long MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+  36:     private static final long MIN_FREE_BYTES = 10 * 1024 * 1024;
+  37:     private static final int MAX_FILES_PER_USER = 200;
+  38:     private static final int MAX_FILENAME_LENGTH = 80;
+  39:     private static final Pattern SAFE_FILENAME = Pattern.compile("^[a-zA-Z0-9._-]+$");
+  40:     private static final Pattern SAFE_USER_SEGMENT = Pattern.compile("^[a-zA-Z0-9_-]+$");
+  41:     private static final int MAGIC_READ_LIMIT = 16;
+  42:     private static final Set<String> ALLOWED_EXTENSIONS = Set.of(
+  43:             ".jpg",
+  44:             ".jpeg",
+  45:             ".png",
+  46:             ".gif",
+  47:             ".webp",
+  48:             ".pdf"
+  49:     );
+  50: 
+  51:     private static final int UUID_LENGTH = UUID.randomUUID().toString().length();
+  52: 
+  53:     private final PathSandbox m_sandbox;
+  54:     private final BoxedPath m_storageRoot;
+  55: 
+  56:     public FileStorage(Path storageDirectory) throws IOException {
+  57:         Path normalizedRoot = storageDirectory.toAbsolutePath().normalize();
+  58:         m_sandbox = PathSandbox.boxroot(normalizedRoot);
+  59:         m_storageRoot = m_sandbox.getRoot();
+  60:         Files.createDirectories(m_storageRoot);
+  61:     }
+  62: 
+  63:     /*public Path store(MultipartFile file) throws IOException {
+  64:         // write code to store a file and returns its path
+  65:     }*/
+  66: 
+  67:     public byte[] getBytes(String filename) throws IOException {
+  68:         Path filepath = m_storageRoot.resolve(filename);
+  69:         byte[] serialized = Files.readAllBytes(filepath);
+  70:         return serialized;
+  71:     }
+  72: 
+  73:     public static FileType identifyType(MultipartFile file) {
+  74:         String contentType = file.getContentType();
+  75:         if (contentType == null) {
+  76:             return FileType.OTHER;
+  77:         }
+  78:         contentType = contentType.toLowerCase();
+  79:         if (contentType.startsWith("image/")) {
+  80:             return FileType.IMAGE;
+  81:         }
+  82:         if (contentType.contains("pdf")) {
+  83:             return FileType.PDF;
+  84:         }
+  85:         return FileType.OTHER;
+  86:     }
+  87: 
+  88:     private static String extractExtension(String filename) {
+  89:         String[] parts = filename.split(".");
+  90:         return parts.length == 1 ? "" : ("." + parts[parts.length - 1]);
+  91:     }
+  92: 
+  93:     public String storeUpload(MultipartFile fileData, String username) throws IOException {
+  94:         if (fileData == null || fileData.isEmpty()) {
+  95:             throw reject(HttpStatus.BAD_REQUEST, "Missing file", username, null, 0);
+  96:         }
+  97:         long size = fileData.getSize();
+  98:         if (size <= 0) {
+  99:             throw reject(HttpStatus.BAD_REQUEST, "Empty file", username, null, size);
+ 100:         }
+ 101:         if (size > MAX_UPLOAD_BYTES) {
+ 102:             throw reject(HttpStatus.PAYLOAD_TOO_LARGE, "File too large", username, null, size);
+ 103:         }
+ 104: 
+ 105:         String originalFilename = fileData.getOriginalFilename();
+ 106:         String baseName = (originalFilename == null) ? "" : Path.of(originalFilename).getFileName().toString();
+ 107:         if (baseName.isBlank() || baseName.length() > MAX_FILENAME_LENGTH || !SAFE_FILENAME.matcher(baseName).matches()) {
+ 108:             throw reject(HttpStatus.BAD_REQUEST, "Invalid filename", username, baseName, size);
+ 109:         }
+ 110: 
+ 111:         String ext = getLowerExtension(baseName);
+ 112:         if (ext.isBlank()) {
+ 113:             throw reject(HttpStatus.BAD_REQUEST, "Missing file extension", username, baseName, size);
+ 114:         }
+ 115:         if (!ALLOWED_EXTENSIONS.contains(ext)) {
+ 116:             throw reject(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Unsupported file extension", username, baseName, size);
+ 117:         }
+ 118: 
+ 119:         String contentType = normalizeContentType(fileData.getContentType());
+ 120:         if (contentType.isBlank()) {
+ 121:             throw reject(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Missing content type", username, baseName, size);
+ 122:         }
+ 123: 
+ 124:         String safeUserSegment = sanitizeUserSegment(username);
+ 125:         BoxedPath userDir = m_storageRoot.resolve(safeUserSegment);
+ 126:         Files.createDirectories(userDir);
+ 127: 
+ 128:         long fileCount = getFileCount(userDir);
+ 129:         if (fileCount >= MAX_FILES_PER_USER) {
+ 130:             throw reject(HttpStatus.TOO_MANY_REQUESTS, "Too many files for user", username, baseName, size);
+ 131:         }
+ 132: 
+ 133:         long freeBytes = Files.getFileStore(userDir).getUsableSpace();
+ 134:         if (freeBytes < size + MIN_FREE_BYTES) {
+ 135:             throw reject(HttpStatus.INSUFFICIENT_STORAGE, "Insufficient disk space", username, baseName, size);
+ 136:         }
+ 137: 
+ 138:         String storedName = UUID.randomUUID().toString() + ext;
+ 139:         BoxedPath storedPath = userDir.resolve(storedName);
+ 140: 
+ 141:         long totalWritten = 0;
+ 142:         try (InputStream in = new BufferedInputStream(fileData.getInputStream());
+ 143:              OutputStream out = Files.newOutputStream(storedPath, StandardOpenOption.CREATE_NEW)) {
+ 144:             byte[] header = in.readNBytes(MAGIC_READ_LIMIT);
+ 145:             if (header.length == 0) {
+ 146:                 throw reject(HttpStatus.BAD_REQUEST, "Empty file", username, baseName, size);
+ 147:             }
+ 148:             MagicType magicType = detectMagicType(header, header.length);
+ 149:             validateType(contentType, ext, magicType, username, baseName, size);
+ 150: 
+ 151:             out.write(header);
+ 152:             totalWritten += header.length;
+ 153: 
+ 154:             byte[] buffer = new byte[8192];
+ 155:             int read;
+ 156:             while ((read = in.read(buffer)) != -1) {
+ 157:                 totalWritten += read;
+ 158:                 if (totalWritten > MAX_UPLOAD_BYTES) {
+ 159:                     throw reject(HttpStatus.PAYLOAD_TOO_LARGE, "File too large", username, baseName, size);
+ 160:                 }
+ 161:                 out.write(buffer, 0, read);
+ 162:             }
+ 163:         } catch (ResponseStatusException ex) {
+ 164:             Files.deleteIfExists(storedPath);
+ 165:             throw ex;
+ 166:         } catch (IOException ex) {
+ 167:             Files.deleteIfExists(storedPath);
+ 168:             LOGGER.warn("Upload failed: user={} filename={}", safeLogValue(username), safeLogValue(baseName), ex);
+ 169:             throw ex;
+ 170:         }
+ 171: 
+ 172:         LOGGER.info("Upload stored: user={} filename={} stored={}", safeLogValue(username), safeLogValue(baseName), storedName);
+ 173:         return safeUserSegment + "/" + storedName;
+ 174:     }
+ 175: 
+ 176:     private static String getLowerExtension(String filename) {
+ 177:         int idx = filename.lastIndexOf('.');
+ 178:         if (idx <= 0 || idx == filename.length() - 1) {
+ 179:             return "";
+ 180:         }
+ 181:         return filename.substring(idx).toLowerCase(Locale.ROOT);
+ 182:     }
+ 183: 
+ 184:     private static String normalizeContentType(String contentType) {
+ 185:         return contentType == null ? "" : contentType.toLowerCase(Locale.ROOT).trim();
+ 186:     }
+ 187: 
+ 188:     private static String sanitizeUserSegment(String username) {
+ 189:         if (username == null) {
+ 190:             return "user";
+ 191:         }
+ 192:         String trimmed = username.trim();
+ 193:         if (SAFE_USER_SEGMENT.matcher(trimmed).matches()) {
+ 194:             return trimmed;
+ 195:         }
+ 196:         String sanitized = trimmed.replaceAll("[^a-zA-Z0-9_-]", "_");
+ 197:         return sanitized.isBlank() ? "user" : sanitized;
+ 198:     }
+ 199: 
+ 200:     private enum MagicType { JPG, PNG, GIF, WEBP, PDF, UNKNOWN }
+ 201: 
+ 202:     private static MagicType detectMagicType(byte[] header, int len) {
+ 203:         if (len >= 3 && (header[0] & 0xFF) == 0xFF && (header[1] & 0xFF) == 0xD8 && (header[2] & 0xFF) == 0xFF) {
+ 204:             return MagicType.JPG;
+ 205:         }
+ 206:         if (len >= 8
+ 207:                 && (header[0] & 0xFF) == 0x89
+ 208:                 && header[1] == 0x50
+ 209:                 && header[2] == 0x4E
+ 210:                 && header[3] == 0x47
+ 211:                 && header[4] == 0x0D
+ 212:                 && header[5] == 0x0A
+ 213:                 && header[6] == 0x1A
+ 214:                 && header[7] == 0x0A) {
+ 215:             return MagicType.PNG;
+ 216:         }
+ 217:         if (len >= 6) {
+ 218:             String sig = new String(header, 0, 6);
+ 219:             if ("GIF87a".equals(sig) || "GIF89a".equals(sig)) {
+ 220:                 return MagicType.GIF;
+ 221:             }
+ 222:         }
+ 223:         if (len >= 12) {
+ 224:             String riff = new String(header, 0, 4);
+ 225:             String webp = new String(header, 8, 4);
+ 226:             if ("RIFF".equals(riff) && "WEBP".equals(webp)) {
+ 227:                 return MagicType.WEBP;
+ 228:             }
+ 229:         }
+ 230:         if (len >= 5) {
+ 231:             String sig = new String(header, 0, 5);
+ 232:             if ("%PDF-".equals(sig)) {
+ 233:                 return MagicType.PDF;
+ 234:             }
+ 235:         }
+ 236:         return MagicType.UNKNOWN;
+ 237:     }
+ 238: 
+ 239:     private ResponseStatusException reject(HttpStatus status, String reason, String username, String filename, long size) {
+ 240:         LOGGER.warn(
+ 241:                 "Upload rejected: status={} reason={} user={} filename={} size={}",
+ 242:                 status.value(),
+ 243:                 reason,
+ 244:                 safeLogValue(username),
+ 245:                 safeLogValue(filename),
+ 246:                 size
+ 247:         );
+ 248:         return new ResponseStatusException(status, reason);
+ 249:     }
+ 250: 
+ 251:     private static String safeLogValue(String value) {
+ 252:         return value == null ? "-" : value;
+ 253:     }
+ 254: 
+ 255:     private static long getFileCount(Path userDir) throws IOException {
+ 256:         try (Stream<Path> files = Files.list(userDir)) {
+ 257:             return files.filter(Files::isRegularFile).count();
+ 258:         }
+ 259:     }
+ 260: 
+ 261:     private void validateType(String contentType, String ext, MagicType magicType, String username, String filename, long size) {
+ 262:         switch (magicType) {
+ 263:             case JPG -> {
+ 264:                 if (!contentType.startsWith("image/")) {
+ 265:                     throw reject(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Invalid image content type", username, filename, size);
+ 266:                 }
+ 267:                 if (!ext.equals(".jpg") && !ext.equals(".jpeg")) {
+ 268:                     throw reject(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Invalid image extension", username, filename, size);
+ 269:                 }
+ 270:             }
+ 271:             case PNG -> {
+ 272:                 if (!contentType.startsWith("image/")) {
+ 273:                     throw reject(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Invalid image content type", username, filename, size);
+ 274:                 }
+ 275:                 if (!ext.equals(".png")) {
+ 276:                     throw reject(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Invalid image extension", username, filename, size);
+ 277:                 }
+ 278:             }
+ 279:             case GIF -> {
+ 280:                 if (!contentType.startsWith("image/")) {
+ 281:                     throw reject(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Invalid image content type", username, filename, size);
+ 282:                 }
+ 283:                 if (!ext.equals(".gif")) {
+ 284:                     throw reject(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Invalid image extension", username, filename, size);
+ 285:                 }
+ 286:             }
+ 287:             case WEBP -> {
+ 288:                 if (!contentType.startsWith("image/")) {
+ 289:                     throw reject(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Invalid image content type", username, filename, size);
+ 290:                 }
+ 291:                 if (!ext.equals(".webp")) {
+ 292:                     throw reject(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Invalid image extension", username, filename, size);
+ 293:                 }
+ 294:             }
+ 295:             case PDF -> {
+ 296:                 if (!contentType.contains("pdf")) {
+ 297:                     throw reject(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Invalid PDF content type", username, filename, size);
+ 298:                 }
+ 299:                 if (!ext.equals(".pdf")) {
+ 300:                     throw reject(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Invalid PDF extension", username, filename, size);
+ 301:                 }
+ 302:             }
+ 303:             default -> throw reject(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Unsupported file type", username, filename, size);
+ 304:         }
+ 305:     }
+ 306: }

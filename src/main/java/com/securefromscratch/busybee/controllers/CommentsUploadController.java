@@ -6,6 +6,7 @@ import com.securefromscratch.busybee.storage.Task;
 import com.securefromscratch.busybee.storage.TaskNotFoundException;
 import com.securefromscratch.busybee.storage.TasksStorage;
 
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
@@ -32,7 +33,7 @@ public class CommentsUploadController {
     @PreAuthorize("@tasksAuthorization.userAllowedToComment(#commentFields.taskid(), authentication.name)")
     @PostMapping(value = "/comment", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<CreatedCommentId> addComment(
-            @RequestPart("commentFields") AddCommentFields commentFields,
+            @RequestPart("commentFields") @Valid AddCommentFields commentFields,
             @RequestPart(value = "file", required = false) Optional<MultipartFile> optFile,
             @AuthenticationPrincipal UserDetails user
     ) throws IOException {
