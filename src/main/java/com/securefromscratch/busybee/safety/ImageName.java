@@ -24,15 +24,15 @@ public class ImageName {
             throw new IllegalArgumentException("Image name length is invalid");
         }
         if (!SAFE_INPUT_PATTERN.matcher(imgName).matches()) {
-            LOGGER.warn("Invalid image name: '{}'", imgName);
+            LOGGER.warn("Invalid image name characters; length={}", imgName.length());
             throw new IllegalArgumentException("Image name contains invalid characters");
         }
         if (imgName.contains("\\")) {
-            LOGGER.warn("Invalid image name path separator: '{}'", imgName);
+            LOGGER.warn("Invalid image name path separator; length={}", imgName.length());
             throw new IllegalArgumentException("Image name contains invalid path separator");
         }
         if (imgName.contains("..")) {
-            LOGGER.warn("Invalid image name path traversal attempt: '{}'", imgName);
+            LOGGER.warn("Invalid image name path traversal attempt; length={}", imgName.length());
             throw new IllegalArgumentException("Image name contains invalid sequence");
         }
         m_name = imgName;

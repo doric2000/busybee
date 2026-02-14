@@ -260,7 +260,6 @@ function createComments(taskid, comments) {
         const replyButton = document.createElement("button");
         replyButton.textContent = "↩"; // Unicode reply symbol
         replyButton.className = "reply-button";
-        console.log(comment)
         replyButton.onclick = () => toggleReplyForm(commentElement, taskid, comment.commentid);
         commentElement.appendChild(replyButton);
 
@@ -271,8 +270,6 @@ function createComments(taskid, comments) {
 }
 
 function createCommentForm(taskId, commentId = null) {
-    //console.log(taskId)
-    //console.log(commentId)
     const form = document.createElement("div");
     form.className = "comment-form";
 
@@ -281,13 +278,14 @@ function createCommentForm(taskId, commentId = null) {
     textBox.placeholder = "Write a comment...";
     form.appendChild(textBox);
 
-    const fileInput = document.createElement("input");
-    fileInput.type = "file";
-    form.appendChild(fileInput);
+    const imageUrlInput = document.createElement("input");
+    imageUrlInput.type = "url";
+    imageUrlInput.placeholder = "Image URL (http/https)";
+    form.appendChild(imageUrlInput);
 
     const addButton = document.createElement("button");
     addButton.textContent = "Add";
-    addButton.onclick = () => submitComment(taskId, textBox, fileInput, commentId);
+    addButton.onclick = () => submitComment(taskId, textBox, imageUrlInput, commentId);
     form.appendChild(addButton);
 
     return form;
@@ -304,30 +302,27 @@ function toggleReplyForm(commentElement, taskId, commentId) {
     }
 }
 
-async function submitComment(taskId, textBox, fileInput, parentCommentId = null) {
+async function submitComment(taskId, textBox, imageUrlInput, parentCommentId = null) {
     const formData = new FormData();
 
     // Create the JSON object for comment fields
     const commentFields = {
         text: textBox.value,
         taskid: taskId,       // Lowercase "taskid"
-        commentid: parentCommentId // Lowercase "commentid"
+        commentid: parentCommentId, // Lowercase "commentid"
+        imageUrl: imageUrlInput.value
     };
 
     // Add the JSON part with explicit Content-Type
     const blob = new Blob([JSON.stringify(commentFields)], { type: 'application/json' });
     formData.append("commentFields", blob);
 
-    if (fileInput.files[0]) {
-        formData.append("file", fileInput.files[0]);
-    }
-
     try {
         const response = await sendPost("/comment", formData);
 
         if (response.ok) {
             textBox.value = ""; // Clear text box
-            fileInput.value = ""; // Clear file input
+            imageUrlInput.value = ""; // Clear URL input
             fetchTasks(); // Refresh tasks to show the new comment
         } else {
             throw new Error(`Error: ${response.status}`);

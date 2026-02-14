@@ -12,7 +12,7 @@ public record ResponsibilityName(String value) {
     @JsonCreator
     public ResponsibilityName(String value) {
         if (value != null && !SAFE_INPUT_PATTERN.matcher(value).matches()) {
-            LOGGER.warn("Invalid responsibility name: '{}'", value);
+            LOGGER.warn("Invalid responsibility name characters; length={}", value.length());
             throw new IllegalArgumentException("Responsibility name contains invalid characters");
         }
         this.value = value;

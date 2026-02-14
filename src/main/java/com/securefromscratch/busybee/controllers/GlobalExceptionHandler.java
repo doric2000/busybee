@@ -13,6 +13,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -81,6 +82,15 @@ public class GlobalExceptionHandler {
         // SecurityException messages may contain filesystem paths; don't leak.
         LOGGER.warn("Rejected request: path={}, type=SecurityException", requestPath(request));
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new ErrorResponse("request: invalid path"));
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ErrorResponse> accessDenied(AccessDeniedException ex, HttpServletRequest request) {
+        String user = request != null && request.getUserPrincipal() != null
+                ? request.getUserPrincipal().getName()
+                : "anonymous";
+        LOGGER.warn("Authorization failure: user={} path={}", user, requestPath(request));
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(new ErrorResponse("access denied"));
     }
 
     @ExceptionHandler(TaskNotFoundException.class)

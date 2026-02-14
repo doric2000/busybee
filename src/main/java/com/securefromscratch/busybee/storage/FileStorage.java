@@ -33,7 +33,7 @@ public class FileStorage {
         OTHER
     }
 
-    private static final long MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+    public static final long MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
     private static final long MIN_FREE_BYTES = 10 * 1024 * 1024;
     private static final int MAX_FILES_PER_USER = 50;
     private static final int MAX_FILENAME_LENGTH = 80;
@@ -104,22 +104,60 @@ public class FileStorage {
         }
 
         String originalFilename = fileData.getOriginalFilename();
+        String contentType = normalizeContentType(fileData.getContentType());
+        try (InputStream in = fileData.getInputStream()) {
+            return storeUploadFromStreamInternal(in, originalFilename, username, contentType, size);
+        }
+    }
+
+    /**
+     * Core upload pipeline for streamed sources (e.g., HTTP download).
+     * This method enforces sandboxing, quotas, magic-bytes, extension allow-list,
+     * and MAX_UPLOAD_BYTES using streaming (never loads entire content into memory).
+     */
+    public String storeUploadFromStream(InputStream in, String originalFilename, String username) throws IOException {
+        return storeUploadFromStreamInternal(in, originalFilename, username, null, -1);
+    }
+
+    /**
+     * Overload used by callers that have an external content-type (e.g., HTTP response header).
+     */
+    public String storeUploadFromStream(InputStream in, String originalFilename, String username, String contentType) throws IOException {
+        return storeUploadFromStreamInternal(in, originalFilename, username, contentType, -1);
+    }
+
+    private String storeUploadFromStreamInternal(
+            InputStream in,
+            String originalFilename,
+            String username,
+            String providedContentType,
+            long knownSize
+    ) throws IOException {
+        if (in == null) {
+            throw reject(HttpStatus.BAD_REQUEST, "Missing file", username, null, 0);
+        }
+
+        long sizeForLogs = Math.max(0, knownSize);
+
         String baseName = (originalFilename == null) ? "" : Path.of(originalFilename).getFileName().toString();
         if (baseName.isBlank() || baseName.length() > MAX_FILENAME_LENGTH || !SAFE_FILENAME.matcher(baseName).matches()) {
-            throw reject(HttpStatus.BAD_REQUEST, "Invalid filename", username, baseName, size);
+            throw reject(HttpStatus.BAD_REQUEST, "Invalid filename", username, baseName, sizeForLogs);
         }
 
         String ext = getLowerExtension(baseName);
         if (ext.isBlank()) {
-            throw reject(HttpStatus.BAD_REQUEST, "Missing file extension", username, baseName, size);
+            throw reject(HttpStatus.BAD_REQUEST, "Missing file extension", username, baseName, sizeForLogs);
         }
         if (!ALLOWED_EXTENSIONS.contains(ext)) {
-            throw reject(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Unsupported file extension", username, baseName, size);
+            throw reject(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Unsupported file extension", username, baseName, sizeForLogs);
         }
 
-        String contentType = normalizeContentType(fileData.getContentType());
+        String contentType = normalizeContentType(providedContentType);
         if (contentType.isBlank()) {
-            throw reject(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Missing content type", username, baseName, size);
+            contentType = inferContentTypeFromExtension(ext);
+        }
+        if (contentType.isBlank()) {
+            throw reject(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Missing content type", username, baseName, sizeForLogs);
         }
 
         String safeUserSegment = sanitizeUserSegment(username);
@@ -128,36 +166,46 @@ public class FileStorage {
 
         long fileCount = getFileCount(userDir);
         if (fileCount >= MAX_FILES_PER_USER) {
-            throw reject(HttpStatus.TOO_MANY_REQUESTS, "Too many files for user", username, baseName, size);
+            throw reject(HttpStatus.TOO_MANY_REQUESTS, "Too many files for user", username, baseName, sizeForLogs);
         }
 
+        // If we don't know the final size (stream), reserve worst-case (MAX_UPLOAD_BYTES).
+        long minRequired = MIN_FREE_BYTES + (knownSize > 0 ? knownSize : MAX_UPLOAD_BYTES);
         long freeBytes = Files.getFileStore(userDir).getUsableSpace();
-        if (freeBytes < size + MIN_FREE_BYTES) {
-            throw reject(HttpStatus.BAD_REQUEST, "Insufficient disk space", username, baseName, size);
+        if (freeBytes < minRequired) {
+            throw reject(HttpStatus.BAD_REQUEST, "Insufficient disk space", username, baseName, sizeForLogs);
+        }
+
+        if (knownSize > MAX_UPLOAD_BYTES) {
+            throw reject(HttpStatus.PAYLOAD_TOO_LARGE, "File too large", username, baseName, knownSize);
         }
 
         String storedName = UUID.randomUUID().toString() + ext;
         BoxedPath storedPath = userDir.resolve(storedName);
 
         long totalWritten = 0;
-        try (InputStream in = new BufferedInputStream(fileData.getInputStream());
+        try (InputStream buffered = new BufferedInputStream(in);
              OutputStream out = Files.newOutputStream(storedPath, StandardOpenOption.CREATE_NEW)) {
-            byte[] header = in.readNBytes(MAGIC_READ_LIMIT);
+
+            byte[] header = buffered.readNBytes(MAGIC_READ_LIMIT);
             if (header.length == 0) {
-                throw reject(HttpStatus.BAD_REQUEST, "Empty file", username, baseName, size);
+                throw reject(HttpStatus.BAD_REQUEST, "Empty file", username, baseName, sizeForLogs);
             }
             MagicType magicType = detectMagicType(header, header.length);
-            validateType(contentType, ext, magicType, username, baseName, size);
+            validateType(contentType, ext, magicType, username, baseName, sizeForLogs);
 
             out.write(header);
             totalWritten += header.length;
+            if (totalWritten > MAX_UPLOAD_BYTES) {
+                throw reject(HttpStatus.PAYLOAD_TOO_LARGE, "File too large", username, baseName, sizeForLogs);
+            }
 
             byte[] buffer = new byte[8192];
             int read;
-            while ((read = in.read(buffer)) != -1) {
+            while ((read = buffered.read(buffer)) != -1) {
                 totalWritten += read;
                 if (totalWritten > MAX_UPLOAD_BYTES) {
-                    throw reject(HttpStatus.PAYLOAD_TOO_LARGE, "File too large", username, baseName, size);
+                    throw reject(HttpStatus.PAYLOAD_TOO_LARGE, "File too large", username, baseName, sizeForLogs);
                 }
                 out.write(buffer, 0, read);
             }
@@ -172,6 +220,17 @@ public class FileStorage {
 
         LOGGER.info("Upload stored: user={} filename={} stored={}", safeLogValue(username), safeLogValue(baseName), storedName);
         return safeUserSegment + "/" + storedName;
+    }
+
+    private static String inferContentTypeFromExtension(String ext) {
+        return switch (ext) {
+            case ".jpg", ".jpeg" -> "image/jpeg";
+            case ".png" -> "image/png";
+            case ".gif" -> "image/gif";
+            case ".webp" -> "image/webp";
+            case ".pdf" -> "application/pdf";
+            default -> "";
+        };
     }
 
     public void cleanupStoredUpload(String storedRelativePath) {
@@ -262,8 +321,18 @@ public class FileStorage {
         return new ResponseStatusException(status, CLIENT_REJECT_REASON);
     }
 
-    private static String safeLogValue(String value) {
-        return value == null ? "-" : value;
+    public static String safeLogValue(String value) {
+        if (value == null) {
+            return "-";
+        }
+        String sanitized = value
+                .replace('\r', '_')
+                .replace('\n', '_')
+                .replace('\t', '_');
+        if (sanitized.length() > 64) {
+            return sanitized.substring(0, 64) + "...";
+        }
+        return sanitized;
     }
 
     private static long getFileCount(Path userDir) throws IOException {

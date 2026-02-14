@@ -74,8 +74,14 @@ public class TasksController {
 
     @PostMapping("/done")
     @PreAuthorize("@tasksAuthorization.isOwnerOrResponsible(#request.taskid, authentication.name) or hasRole('ADMIN')")
-    public ResponseEntity<Map<String, Boolean>> markTaskDone (@Valid @RequestBody MarkDoneRequest request) throws IOException{
+    public ResponseEntity<Map<String, Boolean>> markTaskDone(
+            @Valid @RequestBody MarkDoneRequest request,
+            @AuthenticationPrincipal UserDetails user
+    ) throws IOException {
         boolean alreadyDone = m_tasks.markDone(request.taskid);
+        if (!alreadyDone) {
+            LOGGER.info("Task marked as done: taskId={} by user={}", request.taskid, user != null ? user.getUsername() : "-");
+        }
         return ResponseEntity.ok(Map.of("success",!alreadyDone));
     }
 
