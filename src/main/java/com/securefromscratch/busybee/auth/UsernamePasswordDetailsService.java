@@ -16,7 +16,7 @@ public class UsernamePasswordDetailsService implements UserDetailsService {
 @Override
 public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
     UserAccount user = m_usersStorage.findByUsername(username)
-        .orElseThrow(() -> new UsernameNotFoundException("User not found: " + username));
+        .orElseThrow(() -> new UsernameNotFoundException("Invalid username or password"));
     return org.springframework.security.core.userdetails.User
         .withUsername(user.getUsername())
         .password(user.getHashedPassword())

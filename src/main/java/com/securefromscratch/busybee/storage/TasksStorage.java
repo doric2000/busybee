@@ -48,13 +48,7 @@ public class TasksStorage {
                 tasksItr.remove();
                 Task doneTask = Task.asDone(t);
                 m_tasks.add(doneTask);
-                try {
-                    saveTasks();
-                } catch (IOException e) {
-                    m_tasks.remove(doneTask);
-                    m_tasks.add(t);
-                    throw e;
-                }
+                saveTasks();
                 return false;
             }
         }
@@ -63,12 +57,7 @@ public class TasksStorage {
 
     public UUID add(Task newTask) throws IOException {
         m_tasks.add(newTask);
-        try {
-            saveTasks();
-        } catch (IOException e) {
-            m_tasks.remove(newTask); // undo
-            throw e;
-        }
+        saveTasks();
         return newTask.taskid();
     }
 
@@ -85,27 +74,32 @@ public class TasksStorage {
 
     public UUID addComment(Task t, String text, String createdBy, Optional<UUID> after) throws IOException {
         UUID commentId = t.addComment(text, createdBy, after);
-        try {
-            saveTasks();
-        } catch (IOException e) {
-            t.removeComment(commentId);
-            throw e;
-        }
+        saveTasks();
         return commentId;
     }
 
     public UUID addComment(Task t, String text, Optional<String> image, Optional<String> attachment, String createdBy, Optional<UUID> after) throws IOException {
         UUID commentId = t.addComment(text, image, attachment, createdBy, after);
-        try {
-            saveTasks();
-        } catch (IOException e) {
-            t.removeComment(commentId);
-            throw e;
-        }
+        saveTasks();
         return commentId;
     }
 
     public Optional<Task> find(UUID taskid) {
         return m_tasks.stream().filter((other)->other.taskid().equals(taskid)).findAny();
+    }
+
+    public boolean taskNameExists(String name) {
+        if (name == null) {
+            return false;
+        }
+        String normalizedName = name.trim();
+        if (normalizedName.isEmpty()) {
+            return false;
+        }
+
+        return m_tasks.stream()
+                .map(Task::name)
+                .filter(Objects::nonNull)
+                .anyMatch(existing -> existing.trim().equalsIgnoreCase(normalizedName));
     }
 }

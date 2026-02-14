@@ -35,15 +35,10 @@ public class UsersController {
     public ResponseEntity registerNewUser(
             @Valid @RequestBody NewUserCreationFields request
     ) {
-        try {
-            // יצירת משתמש חדש (הוולידציה מתבצעת בטיפוס Username)
-            String encodedPassword = passwordEncoder.encode(request.password().value());
-            usersStorage.createUser(request.username().value(), encodedPassword,new String[]{"TRIAL"});
-            return ResponseEntity.ok(new UserCreationSuccess("main/main.html"));
-        }
-        catch (Throwable ex) {
-            return ResponseEntity.status(401).body(new ErrorCreatingUser(ex.getMessage()));
-        }
+        // Validation happens in the safety types + Bean Validation. Errors propagate to GlobalExceptionHandler.
+        String encodedPassword = passwordEncoder.encode(request.password().value());
+        usersStorage.createUser(request.username().value(), encodedPassword, new String[]{"TRIAL"});
+        return ResponseEntity.ok(new UserCreationSuccess("main/main.html"));
     }
 
 }

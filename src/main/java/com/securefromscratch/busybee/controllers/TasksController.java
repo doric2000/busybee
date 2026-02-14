@@ -2,6 +2,10 @@ package com.securefromscratch.busybee.controllers;
 
 import com.securefromscratch.busybee.storage.Task;
 import com.securefromscratch.busybee.storage.TasksStorage;
+
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotNull;
+
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.Transformer;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -47,6 +51,7 @@ public class TasksController {
     public record CreateResponse(UUID taskid) { }
 
     public static class MarkDoneRequest {
+        @NotNull
         public UUID taskid;
     }
 
@@ -76,8 +81,8 @@ public class TasksController {
     }
 
     @PostMapping("/done")
-    @PreAuthorize("@tasksAuthorization.isOwner(#request.taskid, authentication.name)")
-    public ResponseEntity<Map<String, Boolean>> markTaskDone (@RequestBody MarkDoneRequest request) throws IOException{
+    @PreAuthorize("@tasksAuthorization.isOwnerOrResponsible(#request.taskid, authentication.name) or hasRole('ADMIN')")
+    public ResponseEntity<Map<String, Boolean>> markTaskDone (@Valid @RequestBody MarkDoneRequest request) throws IOException{
         boolean alreadyDone = m_tasks.markDone(request.taskid);
         return ResponseEntity.ok(Map.of("success",!alreadyDone));
     }
@@ -209,12 +214,7 @@ public class TasksController {
         if (name == null) {
             return;
         }
-        String normalizedName = name.trim();
-        boolean nameExists = m_tasks.getAll().stream()
-                .map(Task::name)
-                .filter(n -> n != null)
-                .anyMatch(existing -> existing.trim().equalsIgnoreCase(normalizedName));
-        if (nameExists) {
+        if (m_tasks.taskNameExists(name)) {
             LOGGER.warn("Create task rejected: duplicate task name");
             throw new ResponseStatusException(HttpStatus.CONFLICT, "name: task name already exists");
         }

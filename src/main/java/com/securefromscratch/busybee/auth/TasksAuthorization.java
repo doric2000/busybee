@@ -3,6 +3,7 @@ package com.securefromscratch.busybee.auth;
 import java.util.Collection;
 import java.util.UUID;
 import java.util.Optional;
+import java.util.Arrays;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -11,6 +12,7 @@ import com.securefromscratch.busybee.controllers.TaskOut;
 import com.securefromscratch.busybee.storage.TasksStorage;
 import com.securefromscratch.busybee.storage.Task;
 import com.securefromscratch.busybee.storage.TaskComment;
+import com.securefromscratch.busybee.storage.TaskNotFoundException;
 
 @Component("tasksAuthorization")
 public class TasksAuthorization {
@@ -28,6 +30,22 @@ public class TasksAuthorization {
     public boolean isOwner(UUID taskid, String username) {
         Optional<Task> task = m_tasks.find(taskid);
         return task.isPresent() && task.get().createdBy().equals(username);
+    }
+
+    // Optional rule: allow users in responsibilityOf to close the task as well.
+    public boolean isOwnerOrResponsible(UUID taskid, String username) {
+        Optional<Task> taskOpt = m_tasks.find(taskid);
+        if (taskOpt.isEmpty()) {
+            throw new TaskNotFoundException(taskid);
+        }
+
+        Task task = taskOpt.get();
+        if (task.createdBy().equals(username)) {
+            return true;
+        }
+
+        String[] responsible = task.responsibilityOf();
+        return responsible != null && Arrays.asList(responsible).contains(username);
     }
 
     public static Collection<TaskOut> filterToAuthorizedTasks(Collection<TaskOut> allTasks, String username) {
